@@ -1,3 +1,4 @@
+from os import PathLike
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 from typing import Union
@@ -20,9 +21,9 @@ class MambaConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size: int,
-        d_model: int,
-        n_layer: int,
+        vocab_size: int = 50277,
+        d_model: int = 1024,
+        n_layer: int = 48,
         d_state: int = 16,
         expand: int = 2,
         dt_rank: Union[str, int] = "auto",
@@ -30,6 +31,8 @@ class MambaConfig(PretrainedConfig):
         pad_vocab_size_multiple: int = 8,
         conv_bias: bool = True,
         bias: bool = False,
+        initializer_range: float = 0.02,
+        **kwargs,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -41,11 +44,25 @@ class MambaConfig(PretrainedConfig):
         self.bias = bias
         self.d_conv = d_conv
         self.d_inner = int(self.expand * self.d_model)
+        self.initializer_range = initializer_range
         if dt_rank == "auto":
             self.dt_rank = math.ceil(self.d_model / 16)
+        else:
+            self.dt_rank = dt_rank
 
         if self.vocab_size % self.pad_vocab_size_multiple != 0:
             self.vocab_size += (
                 self.pad_vocab_size_multiple
                 - self.vocab_size % self.pad_vocab_size_multiple
             )
+
+    def save_pretrained(
+        self, save_directory: str | PathLike, push_to_hub: bool = False, **kwargs
+    ):
+        # TODO: 未来可能要发生变化
+        # if self.vocab_size % self.pad_vocab_size_multiple != 0:
+        #     self.vocab_size -= (
+        #         self.pad_vocab_size_multiple
+        #         - self.vocab_size % self.pad_vocab_size_multiple
+        #     )
+        return super().save_pretrained(save_directory, push_to_hub, **kwargs)

@@ -237,7 +237,7 @@ class MambaPreTrainedModel(PreTrainedModel):
 
 class MambaModel(nn.Module):
     def __init__(self, config: MambaConfig):
-        super().__init__(config)
+        super().__init__()
 
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.layers = nn.ModuleList([ResidualBlock(config) for _ in range(config.n_layer)])
@@ -272,6 +272,7 @@ class MambaForCausalLM(MambaPreTrainedModel):
         super().__init__(config)
         self.config = config
         self.model = MambaModel(self.config)
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.lm_head.weight = self.model.get_input_embeddings().weight  # Tie output projection to embedding weights.
         # See "Weight Tying" paper
 
