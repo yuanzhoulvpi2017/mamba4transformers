@@ -160,3 +160,6 @@ cython_debug/
 .idea/
 weights/
 .DS_Store
+
+internlm_tokenizer
+data
