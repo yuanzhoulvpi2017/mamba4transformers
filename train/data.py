@@ -1,19 +1,14 @@
-import math
 import os
-import random
 from dataclasses import dataclass, field
-from typing import Any, List, Tuple, Dict
+from typing import Any, List, Dict
 
-import datasets
 import torch
 from torch.utils.data import Dataset
-from transformers import DataCollatorWithPadding, DefaultDataCollator
-from transformers import PreTrainedTokenizer, BatchEncoding
+from transformers import PreTrainedTokenizer
 from pathlib import Path
 from typing import Optional
 import os
 from datasets import load_dataset
-from itertools import islice
 import logging
 from .arguments import DataArguments
 
@@ -79,7 +74,7 @@ class PretrainDataCollator:
     max_length: int = field(default=1024)
     tokenizer: PreTrainedTokenizer = field(default=None)
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def __call__(self, features: List[Dict[str, List[int]]]) -> Dict[str, torch.Tensor]:
         features = [
             i["input_ids"][: (self.max_length - 1)] + [self.tokenizer.eos_token_id]
             for i in features
