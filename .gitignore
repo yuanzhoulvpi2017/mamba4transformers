@@ -165,3 +165,4 @@ internlm_tokenizer
 data
 
 test_*
+cache_data*
