@@ -8,7 +8,8 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from einops import rearrange, repeat, einsum
+
+# from einops import einsum
 
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -27,15 +28,15 @@ _CONFIG_FOR_DOC = "MambaConfig"
 
 
 class RMSNorm(nn.Module):
-    def __init__(self,
-                 d_model: int,
-                 eps: float = 1e-5):
+    def __init__(self, d_model: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(d_model))
 
     def forward(self, x):
-        output = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+        output = (
+            x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+        )
 
         return output
 
@@ -58,12 +59,14 @@ class MambaBlock(nn.Module):
         )
 
         # x_proj takes in `x` and outputs the input-specific Δ, B, C
-        self.x_proj = nn.Linear(config.d_inner, config.dt_rank + config.d_state * 2, bias=False)
+        self.x_proj = nn.Linear(
+            config.d_inner, config.dt_rank + config.d_state * 2, bias=False
+        )
 
         # dt_proj projects Δ from dt_rank to d_in
         self.dt_proj = nn.Linear(config.dt_rank, config.d_inner, bias=True)
 
-        A = repeat(torch.arange(1, config.d_state + 1), 'n -> d n', d=config.d_inner)
+        A = torch.arange(1, config.d_state + 1).reshape(1, -1).repeat(config.d_inner, 1)
         self.A_log = nn.Parameter(torch.log(A))
         self.D = nn.Parameter(torch.ones(config.d_inner))
         self.out_proj = nn.Linear(config.d_inner, config.d_model, bias=config.bias)
@@ -85,11 +88,13 @@ class MambaBlock(nn.Module):
         (b, l, d) = x.shape
 
         x_and_res = self.in_proj(x)  # shape (b, l, 2 * d_in)
-        (x, res) = x_and_res.split(split_size=[self.config.d_inner, self.config.d_inner], dim=-1)
+        (x, res) = x_and_res.split(
+            split_size=[self.config.d_inner, self.config.d_inner], dim=-1
+        )
 
-        x = rearrange(x, 'b l d_in -> b d_in l')
+        x = x.transpose(1, 2)
         x = self.conv1d(x)[:, :, :l]
-        x = rearrange(x, 'b d_in l -> b l d_in')
+        x = x.transpose(1, 2)
 
         x = F.silu(x)
 
@@ -97,7 +102,7 @@ class MambaBlock(nn.Module):
 
         y = y * F.silu(res)
 
-        output = self.out_proj(y)
+        output = self.out_proj(y.to(self.out_proj.weight.dtype)).to(x.dtype)
 
         return output
 
@@ -128,11 +133,14 @@ class MambaBlock(nn.Module):
 
         x_dbl = self.x_proj(x)  # (b, l, dt_rank + 2*n)
 
-        (delta, B, C) = x_dbl.split(split_size=[self.config.dt_rank, n, n],
-                                    dim=-1)  # delta: (b, l, dt_rank). B, C: (b, l, n)
+        (delta, B, C) = x_dbl.split(
+            split_size=[self.config.dt_rank, n, n], dim=-1
+        )  # delta: (b, l, dt_rank). B, C: (b, l, n)
         delta = F.softplus(self.dt_proj(delta))  # (b, l, d_in)
 
-        y = self.selective_scan(x, delta, A, B, C, D)  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
+        y = self.selective_scan(
+            x, delta, A, B, C, D
+        )  # This is similar to run_SSM(A, B, C, u) in The Annotated S4 [2]
 
         return y
 
@@ -170,15 +178,18 @@ class MambaBlock(nn.Module):
         # - A is discretized using zero-order hold (ZOH) discretization (see Section 2 Equation 4 in the Mamba paper [1])
         # - B is discretized using a simplified Euler discretization instead of ZOH. From a discussion with authors:
         #   "A is the more important term and the performance doesn't change much with the simplification on B"
-        deltaA = torch.exp(einsum(delta, A, 'b l d_in, d_in n -> b l d_in n'))
-        deltaB_u = einsum(delta, B, u, 'b l d_in, b l n, b l d_in -> b l d_in n')
+        deltaA = torch.exp(torch.einsum("bld,dn -> bldn", delta, A))
+        # deltaB_u = einsum(delta, B, u, 'b l d_in, b l n, b l d_in -> b l d_in n')
+        deltaB_u = torch.einsum("bld,bln, bld -> bldn", delta, B, u)
 
         # Perform selective scan (see scan_SSM() in The Annotated S4 [2])
-        x = torch.zeros((b, d_in, n), device=deltaA.device)
+        x = torch.zeros((b, d_in, n), device=deltaA.device, dtype=C.dtype)
         ys = []
         for i in range(l):
             x = deltaA[:, i] * x + deltaB_u[:, i]
-            y = einsum(x, C[:, i, :], 'b d_in n, b n -> b d_in')
+            # print(f"xdatype: {x.dtype}, cdtype: {C.dtype}")
+            # y = einsum(x, C[:, i, :], 'b d_in n, b n -> b d_in')
+            y = torch.einsum("bdn,bn -> bd", x.to(C.dtype), C[:, i, :])
             ys.append(y)
         y = torch.stack(ys, dim=1)  # shape (b, l, d_in)
 
@@ -240,7 +251,9 @@ class MambaModel(nn.Module):
         super().__init__()
 
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.layers = nn.ModuleList([ResidualBlock(config) for _ in range(config.n_layer)])
+        self.layers = nn.ModuleList(
+            [ResidualBlock(config) for _ in range(config.n_layer)]
+        )
         self.norm_f = RMSNorm(config.d_model)
 
     def forward(self, input_ids: torch.LongTensor = None):
@@ -273,10 +286,16 @@ class MambaForCausalLM(MambaPreTrainedModel):
         self.config = config
         self.model = MambaModel(self.config)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
-        self.lm_head.weight = self.model.get_input_embeddings().weight  # Tie output projection to embedding weights.
+        self.lm_head.weight = (
+            self.model.get_input_embeddings().weight
+        )  # Tie output projection to embedding weights.
         # See "Weight Tying" paper
 
-    def forward(self, input_ids: torch.LongTensor = None, labels: Optional[torch.LongTensor] = None, ):
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        labels: Optional[torch.LongTensor] = None,
+    ):
         """
         config:
             input_ids (long tensor): shape (b, l)    (See Glossary at top for definitions of b, l, d_in, n...)
@@ -305,10 +324,4 @@ class MambaForCausalLM(MambaPreTrainedModel):
             shift_labels = shift_labels.to(shift_logits.device)
             loss = loss_fct(shift_logits, shift_labels)
 
-        return CausalLMOutputWithPast(
-            loss,
-            logits,
-            None,
-            None,
-            None
-        )
+        return CausalLMOutputWithPast(loss, logits, None, None, None)
