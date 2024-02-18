@@ -35,7 +35,7 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         output = (
-            x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+                x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
         )
 
         return output
@@ -291,10 +291,26 @@ class MambaForCausalLM(MambaPreTrainedModel):
         )  # Tie output projection to embedding weights.
         # See "Weight Tying" paper
 
+    def prepare_inputs_for_generation(
+            self,
+            input_ids,
+            past_key_values=None,
+            inputs_embeds=None,
+            **kwargs,
+    ):
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        return model_inputs
+
     def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        labels: Optional[torch.LongTensor] = None,
+            self,
+            input_ids: torch.LongTensor = None,
+            labels: Optional[torch.LongTensor] = None,
     ):
         """
         config:
